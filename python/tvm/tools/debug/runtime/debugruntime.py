@@ -22,6 +22,105 @@ def _ensure_dir(file_path):
     if not os.path.exists(directory):
         os.makedirs(directory)
 
+class NodeStepper(object):
+    #TVMDebug stepper Registration
+
+    def __init__(self, cli_obj):
+        #Constructor for NodeStepper
+        self.next_exec = 0
+        self._cli_obj = cli_obj
+        self.node_exec_status = []
+        self.graph_nodes_count = get_graph_node_count(cli_obj)
+        for i in range(self.graph_nodes_count):
+            self.node_exec_status.append(False)
+
+    def get_exec_status(self, target_node):
+        return self.node_exec_status[target_node]
+
+    def set_exec_status(self, target_node, status):
+        self.node_exec_status[target_node] = status
+
+    def set_next_node(self, target_node):
+        self.next_exec = target_node + 1
+
+    def get_next_node(self):
+        return self.next_exec
+
+    def get_graph_nodes_count(self):
+        return self.graph_nodes_count
+
+    def get_additional_target_nodes(self, target_node):
+        additional_target_nodes = []
+        input_list = get_node_inputs_index(self._cli_obj, target_node)
+        if input_list == None:
+            print("Current node %d doesnot have an input", target_node)
+            return
+        exec_inp = []
+        for input in input_list:
+            exec_inp.append(input)
+        while len(exec_inp) > 0:
+            input = exec_inp.pop()
+            if self.get_exec_status(input) == True:
+                continue;
+            additional_target_nodes.append(input)
+            sub_input_list = get_node_inputs_index(self._cli_obj, input)
+            for sub_input in sub_input_list:
+                if self.get_exec_status(sub_input) != True \
+                        and sub_input not in exec_inp:
+                    exec_inp.append(sub_input)
+        return additional_target_nodes
+
+def stepper_init(cli_obj):
+    print("stepper_init called")
+    stepper = NodeStepper(cli_obj)
+    return stepper
+
+def get_graph_node_count(cli_obj):
+    return len(cli_obj._nodes_list)
+
+def get_node_raw_index(cli_obj, index):
+    """Return the output raw node index
+
+    Parameters
+    ----------
+    node_index: int
+        Node index from the NNVM graph
+
+    Returns
+    ----------
+    Raw node index
+    """
+    return cli_obj.node_row_ptr_list[index]
+
+def get_node_inputs_index(cli_obj, index):
+    """Return the input nodes index from the graph
+
+    Parameters
+    ----------
+    node_index: int
+        The node index for which the inputs has to find
+
+    Returns
+    ----------
+    Input nodes index from the graph
+    """
+    node_list = cli_obj._nodes_list
+    inputs_name = []
+    for i in range (len(node_list)):
+        if i == index:
+            cur_node = node_list[i]
+            if cur_node['op'] == 'param':
+                break
+            inputs_name = cur_node['inputs']
+            break;
+
+    inputs_id = []
+    for raw_node_id in range (len(node_list)):
+        node = node_list[raw_node_id]
+        for input in inputs_name:
+            if node['name'] == input:
+                inputs_id.append(raw_node_id)
+    return inputs_id
 
 def _dump_json(ctx, cli_obj, dltype_list, shapes_list):
     """Dump the nodes in json format to file
@@ -161,7 +260,7 @@ def create(obj, graph):
     dltype_list = json_obj['attrs']['dltype']
     shapes_list = json_obj['attrs']['shape']
     heads_list = json_obj['heads']
-
+    cli_obj.node_row_ptr_list = json_obj['node_row_ptr']
     # dump the json information
     _dump_json(ctx, cli_obj, dltype_list, shapes_list)
     _dump_heads(cli_obj, heads_list)

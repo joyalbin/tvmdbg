@@ -62,15 +62,19 @@ class GraphRuntime : public ModuleNode {
     }
   }
 
-  void DebugRun() {
+  void DebugRun(int index=-1) {
+    size_t s_index = 0;
+    size_t e_index = 0;
+    s_index = (index == -1) ? 0 : index;
+    e_index = (index == -1) ? op_execs_.size() : index + 1;
     // Execute each op and copy the outs
-    for (size_t i = 0; i < op_execs_.size(); ++i) {
+    for (size_t i = s_index; i < e_index; ++i) {
       if (op_execs_[i]) op_execs_[i]();
       size_t num_outputs = (nodes_[i].op_type == "null") ? 1: nodes_[i].param.num_outputs;
       for (size_t j = 0; j < num_outputs; j++) {
           uint32_t eid = this->entry_id(i, j);
           TVM_CCALL(TVMArrayCopyFromTo(&data_entry_[eid], debug_buffers_[eid], nullptr));
-          // CheckNanOrInf(debug_buffers_[i], (CHECK_NAN | CHECK_INF ));
+          //CheckNanOrInf(debug_buffers_[i], (CHECK_NAN | CHECK_INF ));
       }
     }
   }
@@ -122,6 +126,18 @@ class GraphRuntime : public ModuleNode {
     TVM_CCALL(TVMArrayCopyFromTo(data_in, &data_entry_[eid], nullptr));
   }
   /*!
+   * \brief set index-th input to the graph.
+   * \param index The input index.
+   * \param data_in The input data.
+   */
+  void SetNodeData(int index, DLTensor* data_in) {
+
+    CHECK_LT(static_cast<size_t>(index), nodes_.size());
+    uint32_t eid = this->entry_id(index, 0);
+    TVM_CCALL(TVMArrayCopyFromTo(data_in, &data_entry_[eid], nullptr));
+  }
+
+  /*!
    * \brief Copy index-th input to data_out
    * \param index The input index.
    * \param data_out The output
@@ -136,6 +152,21 @@ class GraphRuntime : public ModuleNode {
    * \param data The data pointer.
    * \param check_flag The flag which denotes whether to check NAN or INF.
    */
+
+  void PrintDlTensor(DLTensor* data) {
+    printf("\nTensor ndim=%d [", data->ndim);
+    size_t size = 1;
+    for (tvm_index_t i = 0; i < data->ndim; ++i) {
+        printf("%ld, ", data->shape[i]);
+       size *= data->shape[i];
+    }
+    printf("] Dtype=%d, Bits=%d Lanes=%d Data=", data->dtype.code, data->dtype.bits, data->dtype.lanes);
+    size *= (data->dtype.bits * data->dtype.lanes + 7) / 8;
+    for (size_t i=0; (i < 10 && i < size); ++i) {
+        printf("%f, ", ((float *)data->data)[i]);
+    }
+  }
+
   void CheckNanOrInf(DLTensor* data, int check_flag) {
     if (check_flag == CHECK_NONE) {
         return;
@@ -174,6 +205,20 @@ class GraphRuntime : public ModuleNode {
     CHECK_LT(static_cast<size_t>(index), outputs_.size());
     uint32_t eid = this->entry_id(outputs_[index]);
     TVM_CCALL(TVMArrayCopyFromTo(&data_entry_[eid], data_out, nullptr));
+  }
+  /*!
+   * \brief Get the node index given the name of node.
+   * \param name The name of the node.
+   * \return The index of node.
+   */
+  int GetNodeIndex(const std::string& name) {
+    for (uint32_t nid = 0; nid< nodes_.size(); ++nid) {
+      if (nodes_[nid].name == name) {
+        return static_cast<int>(nid);
+      }
+    }
+    LOG(FATAL) << "cannot find " << name << " among nodex";
+    return -1;
   }
   /*!
    * \brief Load parameters from binary stream
@@ -615,6 +660,15 @@ PackedFunc GraphRuntime::GetFunction(
           this->SetInput(args[0], args[1]);
         }
       });
+    } else if (name == "set_node_data") {
+    return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
+        if (args[0].type_code() == kStr) {
+          int in_idx = this->GetInputIndex(args[0]);
+          if (in_idx >= 0) this->SetNodeData(in_idx, args[1]);
+        } else {
+          this->SetNodeData(args[0], args[1]);
+        }
+      });
   } else if (name == "get_output") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
         this->GetOutput(args[0], args[1]);
@@ -639,7 +693,11 @@ PackedFunc GraphRuntime::GetFunction(
       });
   } else if (name == "debug_run") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {
-        this->DebugRun();
+        if (args[0].type_code() == kStr) {
+            this->DebugRun(this->GetNodeIndex(args[0]));
+        } else {
+            this->DebugRun(args[0]);
+        }
       });
   } else if (name == "load_params") {
     return PackedFunc([sptr_to_self, this](TVMArgs args, TVMRetValue* rv) {

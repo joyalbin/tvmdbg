@@ -48,7 +48,6 @@ def create(graph_json_str, libmod, ctx, debug=False):
     func_obj = fcreate(graph_json_str, libmod, device_type, device_id)
     return GraphModule(func_obj, ctx, graph_json_str, debug)
 
-
 class GraphModule(object):
     """Wrapper runtime module.
 
@@ -81,10 +80,28 @@ class GraphModule(object):
         self._set_debug_buffer = module["set_debug_buffer"]
         self._debug_run = module["debug_run"]
         self._load_params = module["load_params"]
+        self._set_node_data = module["set_node_data"]
+        self._debug_started = True
         self.ctx = ctx
         self.debug = debug
         if self.debug:
             self.dbgobj = debugruntime.create(self, graph_json_str)
+            self.stepper = debugruntime.stepper_init(self.dbgobj)
+
+    def set_node_data(self, key=None, value=None):
+        """Set inputs to the module via kwargs
+
+        Parameters
+        ----------
+        key : int or str
+           The input key
+
+        value : the input value.
+           The input key
+        """
+        if key:
+            self._set_node_data(key, nd.array(value, ctx=self.ctx))
+        return self
 
     def set_input(self, key=None, value=None, **params):
         """Set inputs to the module via kwargs
@@ -122,9 +139,11 @@ class GraphModule(object):
         for ndbuffer in self.ndarraylist:
             self._set_debug_buffer(ndbuffer)
 
-    def debug_run(self):
-        self.set_debug_buffer()
-        self._debug_run()
+    def debug_run(self, index=-1):
+        if self._debug_started == True:
+            self.set_debug_buffer();
+            self._debug_started = False
+        self._debug_run(index)
         debugruntime.dump_output(self.dbgobj, self.ndarraylist)
 
     def run(self, **input_dict):
@@ -191,3 +210,40 @@ class GraphModule(object):
             The key to the module.
         """
         return self.module[key]
+
+    def cont(self, target_node):
+        stepper = self.stepper
+        def prepare_inputs(target_node):
+            additional_target_nodes = \
+                    stepper.get_additional_target_nodes(target_node)
+            for i in reversed(xrange(len(additional_target_nodes))):
+                self.debug_run(additional_target_nodes[i])
+                stepper.set_exec_status(additional_target_nodes[i],
+                                        True)
+            return
+
+        prepare_inputs(target_node)
+        self.debug_run(target_node)
+        stepper.set_next_node(target_node)
+        stepper.set_exec_status(target_node, True)
+        raw_index = debugruntime.get_node_raw_index(self.dbgobj,
+                                                    target_node)
+        return self.ndarraylist[raw_index]
+
+    def step(self, num_items=1):
+        stepper = self.stepper
+        if num_items < 0:
+            print("ERROR: Invalid number of items to step")
+
+        for i in range (num_items):
+            if stepper.get_next_node() > stepper.get_graph_nodes_count():
+                print("ERROR: cannot step any further because the " \
+                      "end of the list of nodes reached")
+                return
+            else:
+                out = self.cont(stepper.get_next_node())
+        return out
+
+
+    def inject_value(self, key=None, value=None):
+        return self.set_node_data(key, value)
